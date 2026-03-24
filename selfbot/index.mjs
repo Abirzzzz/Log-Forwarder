@@ -29,6 +29,11 @@ function fmtDate(ts) {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
 }
 
+function fmtShortDate(ts) {
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
 const FIELDS = [
   { label: "source server", get: (c) => c.source?.guildId, set: (c, v) => { c.source = c.source || {}; c.source.guildId = v; } },
   { label: "source channel", get: (c) => c.source?.channelId, set: (c, v) => { c.source = c.source || {}; c.source.channelId = v; } },
@@ -39,19 +44,30 @@ const FIELDS = [
 ];
 
 const HELP_TEXT = [
-  "cmdpass:abztx — shows this list",
-  "config — show current config fields",
-  "config edit <number> <value> — edit a config field by number",
-  "server <S> member — list members of server S (page 1)",
-  "server <S> member<page> — list members of server S at page",
-  "view <S> <query> — search members in server S by name",
-  "message view <U> <C> <S> — last 500 msgs from user U in channel C of server S",
-  "message view <U> <C> <S> <page> — same with specific page",
+  "cmdpass:abztx  shows ts",
+  "config — show current config",
+  "config edit <number> <value>  edit niga",
+  "server <S> member(int) optional icl nga",
+  "view <S> <query>",
+  "message view <U> <C> <S>  last 1k msgs from user U in channel C of server S, 50 per page 20 pages max",
+  "message view <U> <C> <S> <page>  same shi",
   "",
-  "S = server id  |  C = channel id  |  U = user id",
+  "S = server id  C = channel id  U = user id",
 ].join("\n");
 
 const client = new Client({ checkUpdate: false });
+
+// In-memory content cache to recover old message content before edits/deletes
+// Keyed by message id, stores the last known content string
+const contentCache = new Map();
+const CACHE_MAX = 3000;
+
+function cacheSet(id, content) {
+  if (!contentCache.has(id) && contentCache.size >= CACHE_MAX) {
+    contentCache.delete(contentCache.keys().next().value);
+  }
+  contentCache.set(id, content ?? "");
+}
 
 async function getLogChannel() {
   const cfg = loadConfig();
@@ -81,6 +97,14 @@ function resolveContent(message) {
   if (message.stickers?.size > 0) return "(sticker)";
   if (message.embeds?.length > 0) return "(embed only)";
   return "(no content)";
+}
+
+// Format a message view line: bold content, date prefix M/D only if it fits under 90 chars
+function fmtViewLine(ts, rawContent) {
+  const date = fmtShortDate(ts);
+  const bold = `**${rawContent}**`;
+  const withDate = `[${date}] ${bold}`;
+  return withDate.length <= 90 ? withDate : bold;
 }
 
 async function logNewMessage(message) {
@@ -117,8 +141,12 @@ client.on("messageCreate", async (message) => {
     message.guild?.id === cfg.source.guildId &&
     message.channel.id === cfg.source.channelId;
 
-  if (isSource && message.author.id !== client.user.id) {
-    await logNewMessage(message);
+  if (isSource) {
+    // Cache all source channel messages for edit tracking
+    cacheSet(message.id, message.content);
+    if (message.author.id !== client.user.id) {
+      await logNewMessage(message);
+    }
   }
 
   if (!isAllowed(message.author.id)) return;
@@ -273,18 +301,20 @@ client.on("messageCreate", async (message) => {
 
     let userMessages = [];
     let lastId = null;
-    let done = false;
 
     try {
-      while (!done) {
+      while (userMessages.length < 1000) {
         const opts = { limit: 100 };
         if (lastId) opts.before = lastId;
         const batch = await channel.messages.fetch(opts);
         if (batch.size === 0) break;
-        batch.filter((m) => m.author.id === userId).forEach((m) => userMessages.push(m));
+        batch.forEach((m) => {
+          if (m.author.id === userId && userMessages.length < 1000) {
+            userMessages.push(m);
+          }
+        });
         lastId = batch.last().id;
-        if (batch.size < 100) done = true;
-        if (userMessages.length >= 500) done = true;
+        if (batch.size < 100) break;
       }
     } catch {
       await message.channel.send("rly zro? E5");
@@ -293,8 +323,9 @@ client.on("messageCreate", async (message) => {
 
     userMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
 
-    const perPage = 20;
-    const maxPage = Math.ceil(userMessages.length / perPage) || 1;
+    const perPage = 50;
+    const totalPages = Math.ceil(userMessages.length / perPage) || 1;
+    const maxPage = Math.min(totalPages, 20);
 
     if (!Number.isInteger(page) || page < 1 || page > maxPage) {
       await message.channel.send("really jro");
@@ -304,18 +335,26 @@ client.on("messageCreate", async (message) => {
     const slice = userMessages.slice((page - 1) * perPage, page * perPage);
     const lines = [`${maxPage}`];
     for (const m of slice) {
-      const date = fmtDate(m.createdTimestamp);
-      const txt = (m.content || resolveContent(m) || "(no content)").slice(0, 80);
-      lines.push(`[${date}] ${txt}`);
+      const rawTxt = (m.content || resolveContent(m) || "(no content)");
+      lines.push(fmtViewLine(m.createdTimestamp, rawTxt));
     }
-    await message.channel.send(lines.join("\n").slice(0, 2000));
+
+    let out = lines.join("\n");
+    if (out.length > 2000) out = out.slice(0, 1997) + "...";
+    await message.channel.send(out);
     return;
   }
 });
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
-  const oldContent = oldMessage.content ?? "";
+  // Pull from our own cache first — Discord often doesn't have oldMessage.content
+  const cachedOld = contentCache.get(newMessage.id);
+  const oldContent = (oldMessage.content || cachedOld) ?? "";
   const newContent = newMessage.content ?? "";
+
+  // Update cache with new content
+  if (newMessage.guild) cacheSet(newMessage.id, newMessage.content);
+
   if (oldContent === newContent) return;
 
   const cfg = loadConfig();
@@ -343,12 +382,16 @@ client.on("messageDelete", async (message) => {
     message.channel.id !== cfg.source.channelId
   ) return;
 
+  // Try our own cache before Discord's partial
+  const cachedContent = contentCache.get(message.id);
+  contentCache.delete(message.id);
+
   const ch = await getLogChannel();
   if (!ch) return;
 
   const date = fmtDate(message.createdTimestamp || Date.now());
   const author = resolveAuthor(message);
-  const content = message.content || (message.attachments?.size > 0 ? "(attachment only)" : "(not cached)");
+  const content = message.content || cachedContent || (message.attachments?.size > 0 ? "(attachment only)" : "(not cached)");
 
   let out = `[${date}] ${author} deleted ts\n${content}`;
   if (message.attachments?.size > 0) {
