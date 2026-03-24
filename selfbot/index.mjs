@@ -1,134 +1,268 @@
 import { Client } from "discord.js-selfbot-v13";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const config = JSON.parse(readFileSync(join(__dirname, "config.json"), "utf-8"));
+const configPath = join(__dirname, "config.json");
 
-const { token, source, log: logDest } = config;
+function loadConfig() {
+  return JSON.parse(readFileSync(configPath, "utf-8"));
+}
 
-if (!token || token === "YOUR_DISCORD_TOKEN_HERE") {
-  console.error("[ERROR] Please set your Discord token in config.json");
-  process.exit(1);
+function saveConfig(cfg) {
+  writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 }
-if (!source.guildId || !source.channelId) {
-  console.error("[ERROR] Please set source guildId and channelId in config.json");
-  process.exit(1);
+
+function isAllowed(userId) {
+  const cfg = loadConfig();
+  if (cfg.owner && cfg.owner.trim() === userId) return true;
+  if (cfg.allowed && cfg.allowed.trim() !== "") {
+    const ids = cfg.allowed.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ids.includes(userId)) return true;
+  }
+  return false;
 }
-if (!logDest.guildId || !logDest.channelId) {
-  console.error("[ERROR] Please set log guildId and channelId in config.json");
-  process.exit(1);
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
 }
+
+const FIELDS = [
+  { label: "source server", get: (c) => c.source?.guildId, set: (c, v) => { c.source = c.source || {}; c.source.guildId = v; } },
+  { label: "source channel", get: (c) => c.source?.channelId, set: (c, v) => { c.source = c.source || {}; c.source.channelId = v; } },
+  { label: "log server", get: (c) => c.log?.guildId, set: (c, v) => { c.log = c.log || {}; c.log.guildId = v; } },
+  { label: "log channel", get: (c) => c.log?.channelId, set: (c, v) => { c.log = c.log || {}; c.log.channelId = v; } },
+  { label: "owner", get: (c) => c.owner, set: (c, v) => { c.owner = v; } },
+  { label: "allowed", get: (c) => c.allowed, set: (c, v) => { c.allowed = v; } },
+];
 
 const client = new Client({ checkUpdate: false });
 
-client.on("ready", () => {
-  console.log(`[INFO] Logged in as ${client.user.tag}`);
-  console.log(`[INFO] Monitoring guild: ${source.guildId}, channel: ${source.channelId}`);
-  console.log(`[INFO] Forwarding to guild: ${logDest.guildId}, channel: ${logDest.channelId}`);
-});
+async function getLogChannel() {
+  const cfg = loadConfig();
+  return client.guilds.cache.get(cfg.log.guildId)?.channels.cache.get(cfg.log.channelId) || null;
+}
 
-client.on("messageCreate", async (message) => {
-  if (
-    message.guild?.id !== source.guildId ||
-    message.channel.id !== source.channelId
-  ) {
-    return;
-  }
+async function logNewMessage(message) {
+  const ch = await getLogChannel();
+  if (!ch || !ch.isText()) return;
 
-  const logChannel = client.guilds.cache
-    .get(logDest.guildId)
-    ?.channels.cache.get(logDest.channelId);
-
-  if (!logChannel || !logChannel.isText()) {
-    console.error("[errror] log channel not found or not a text channelf");
-    return;
-  }
-
-  const timestamp = new Date(message.createdTimestamp).toISOString();
+  const date = fmtDate(message.createdTimestamp);
   const author = `${message.author.username}#${message.author.discriminator} (${message.author.id})`;
   const content = message.content || "(no text content)";
 
-  let logMessage = `\`[${timestamp}]\` ${author}\n${content}`;
-
+  let out = `[${date}] ${author}\n${content}`;
   if (message.attachments.size > 0) {
-    const attachmentLinks = message.attachments.map((a) => a.url).join("\n");
-    logMessage += `\natt:\n${attachmentLinks}`;
+    out += "\natt:\n" + message.attachments.map((a) => a.url).join("\n");
   }
-
   if (message.embeds.length > 0) {
-    logMessage += `\n*(${message.embeds.length} embed(s) not shown)*`;
+    out += `\n(${message.embeds.length} embed(s))`;
+  }
+  if (out.length > 2000) out = out.slice(0, 1997) + "...";
+  try { await ch.send(out); } catch (e) { console.error("[error] log send failed:", e.message); }
+}
+
+client.on("ready", () => {
+  const cfg = loadConfig();
+  console.log(`[INFO] logged in as ${client.user.tag}`);
+  console.log(`[INFO] source: ${cfg.source.guildId} / ${cfg.source.channelId}`);
+  console.log(`[INFO] log: ${cfg.log.guildId} / ${cfg.log.channelId}`);
+});
+
+client.on("messageCreate", async (message) => {
+  const cfg = loadConfig();
+
+  const isSource =
+    message.guild?.id === cfg.source.guildId &&
+    message.channel.id === cfg.source.channelId;
+
+  if (isSource && message.author.id !== client.user.id) {
+    await logNewMessage(message);
   }
 
-  if (logMessage.length > 2000) {
-    logMessage = logMessage.slice(0, 1997) + "...";
+  if (!isAllowed(message.author.id)) return;
+
+  const raw = message.content.trim();
+
+  if (raw === "config") {
+    const lines = FIELDS.map((f, i) => {
+      const val = f.get(cfg) || "not set";
+      return `${i + 1}. ${f.label}: ${val}`;
+    });
+    await message.channel.send(lines.join("\n"));
+    return;
   }
 
-  try {
-    await logChannel.send(logMessage);
-  } catch (err) {
-    console.error("[error] failed to send log messageniga", err.message);
+  if (raw.startsWith("config edit ")) {
+    const rest = raw.slice("config edit ".length).trim();
+    const spaceIdx = rest.indexOf(" ");
+    if (spaceIdx === -1) {
+      await message.channel.send("rly zro? E1");
+      return;
+    }
+    const numStr = rest.slice(0, spaceIdx);
+    const value = rest.slice(spaceIdx + 1).trim();
+    const num = parseInt(numStr);
+    if (isNaN(num) || num < 1 || num > FIELDS.length || !value) {
+      await message.channel.send("rly zro? E1");
+      return;
+    }
+    const newCfg = loadConfig();
+    FIELDS[num - 1].set(newCfg, value);
+    saveConfig(newCfg);
+    await message.channel.send(`${FIELDS[num - 1].label} set to ${value}`);
+    return;
+  }
+
+  const memberMatch = raw.match(/^server (\S+) member(\d*)$/);
+  if (memberMatch) {
+    const guildId = memberMatch[1];
+    const pageRaw = memberMatch[2];
+    const page = pageRaw === "" ? 1 : parseInt(pageRaw);
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      await message.channel.send("rly zro? E2");
+      return;
+    }
+
+    let members;
+    try {
+      const fetched = await guild.members.fetch();
+      members = [...fetched.values()].sort((a, b) =>
+        a.user.username.localeCompare(b.user.username)
+      );
+    } catch {
+      await message.channel.send("rly zro? E3");
+      return;
+    }
+
+    const perPage = 20;
+    const maxPage = Math.ceil(members.length / perPage) || 1;
+
+    if (!Number.isInteger(page) || page < 1 || page > maxPage) {
+      await message.channel.send("really jro");
+      return;
+    }
+
+    const slice = members.slice((page - 1) * perPage, page * perPage);
+    const lines = [`${maxPage}`];
+    for (const m of slice) {
+      const role = m.roles.highest.name === "@everyone" ? "no role" : m.roles.highest.name;
+      lines.push(`${m.user.username}#${m.user.discriminator} - ${role}`);
+    }
+    await message.channel.send(lines.join("\n").slice(0, 2000));
+    return;
+  }
+
+  const msgViewMatch = raw.match(/^message view (\S+) (\S+) (\S+)(?:\s+(\d+))?$/);
+  if (msgViewMatch) {
+    const userId = msgViewMatch[1];
+    const channelId = msgViewMatch[2];
+    const guildId = msgViewMatch[3];
+    const pageRaw = msgViewMatch[4];
+    const page = pageRaw ? parseInt(pageRaw) : 1;
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      await message.channel.send("rly zro? E2");
+      return;
+    }
+
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel || !channel.isText()) {
+      await message.channel.send("rly zro? E4");
+      return;
+    }
+
+    let userMessages = [];
+    let lastId = null;
+    let done = false;
+
+    try {
+      while (!done) {
+        const opts = { limit: 100 };
+        if (lastId) opts.before = lastId;
+        const batch = await channel.messages.fetch(opts);
+        if (batch.size === 0) break;
+        batch.filter((m) => m.author.id === userId).forEach((m) => userMessages.push(m));
+        lastId = batch.last().id;
+        if (batch.size < 100) done = true;
+        if (userMessages.length >= 500) done = true;
+      }
+    } catch {
+      await message.channel.send("rly zro? E5");
+      return;
+    }
+
+    userMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+
+    const perPage = 20;
+    const maxPage = Math.ceil(userMessages.length / perPage) || 1;
+
+    if (!Number.isInteger(page) || page < 1 || page > maxPage) {
+      await message.channel.send("really jro");
+      return;
+    }
+
+    const slice = userMessages.slice((page - 1) * perPage, page * perPage);
+    const lines = [`${maxPage}`];
+    for (const m of slice) {
+      const date = fmtDate(m.createdTimestamp);
+      const txt = (m.content || "(no text)").slice(0, 80);
+      lines.push(`[${date}] ${txt}`);
+    }
+    await message.channel.send(lines.join("\n").slice(0, 2000));
+    return;
   }
 });
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
-  if (
-    newMessage.guild?.id !== source.guildId ||
-    newMessage.channel.id !== source.channelId
-  ) {
-    return;
-  }
-
   if (oldMessage.content === newMessage.content) return;
+  const cfg = loadConfig();
+  if (
+    newMessage.guild?.id !== cfg.source.guildId ||
+    newMessage.channel.id !== cfg.source.channelId
+  ) return;
 
-  const logChannel = client.guilds.cache
-    .get(logDest.guildId)
-    ?.channels.cache.get(logDest.channelId);
+  const ch = await getLogChannel();
+  if (!ch || !ch.isText()) return;
 
-  if (!logChannel || !logChannel.isText()) return;
-
-  const timestamp = new Date(newMessage.editedTimestamp || newMessage.createdTimestamp).toISOString();
+  const date = fmtDate(newMessage.editedTimestamp || newMessage.createdTimestamp);
   const author = `${newMessage.author?.username}#${newMessage.author?.discriminator} (${newMessage.author?.id})`;
   const oldContent = oldMessage.content || "(unavailable)";
   const newContent = newMessage.content || "(no text content)";
 
-  const logMessage = `\`[${timestamp}]\` ${author} edit\nold ahh: ${oldContent}\nnew: ${newContent}`.slice(0, 2000);
-
-  try {
-    await logChannel.send(logMessage);
-  } catch (err) {
-    console.error("[error idk how] failed to send edit logg", err.message);
-  }
+  const out = `[${date}] ${author} edit\nold ahh: ${oldContent}\nnew: ${newContent}`.slice(0, 2000);
+  try { await ch.send(out); } catch (e) { console.error("[error] edit log failed:", e.message); }
 });
 
 client.on("messageDelete", async (message) => {
+  const cfg = loadConfig();
   if (
-    message.guild?.id !== source.guildId ||
-    message.channel.id !== source.channelId
-  ) {
-    return;
-  }
+    message.guild?.id !== cfg.source.guildId ||
+    message.channel.id !== cfg.source.channelId
+  ) return;
 
-  const logChannel = client.guilds.cache
-    .get(logDest.guildId)
-    ?.channels.cache.get(logDest.channelId);
+  const ch = await getLogChannel();
+  if (!ch || !ch.isText()) return;
 
-  if (!logChannel || !logChannel.isText()) return;
-
-  const timestamp = new Date().toISOString();
+  const date = fmtDate(message.createdTimestamp || Date.now());
   const author = message.author
     ? `${message.author.username}#${message.author.discriminator} (${message.author.id})`
-    : "(unknown user)";
+    : "(unknown)";
   const content = message.content || "(no text content)";
 
-  const logMessage = `\`[${timestamp}]\` ${author} deleted ts \n${content}`.slice(0, 2000);
-
-  try {
-    await logChannel.send(logMessage);
-  } catch (err) {
-    console.error("[error] faiiled to send delete log nga", err.message);
-  }
+  const out = `[${date}] ${author} deleted ts\n${content}`.slice(0, 2000);
+  try { await ch.send(out); } catch (e) { console.error("[error] delete log failed:", e.message); }
 });
 
-client.login(token);
+const cfg = loadConfig();
+if (!cfg.token || cfg.token === "YOUR_DISCORD_TOKEN_HERE") {
+  console.error("[ERROR] set your token in config.json");
+  process.exit(1);
+}
+
+client.login(cfg.token);
