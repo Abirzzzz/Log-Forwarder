@@ -109,6 +109,21 @@ function fmtViewLine(num, ts, rawContent) {
   return withDate.length <= 95 ? withDate : withoutDate;
 }
 
+// Send lines across multiple Discord messages if they exceed 2000 chars
+async function sendLines(channel, lines) {
+  let buf = "";
+  for (const line of lines) {
+    const add = buf.length === 0 ? line : "\n" + line;
+    if (buf.length + add.length > 2000) {
+      await channel.send(buf);
+      buf = line;
+    } else {
+      buf += add;
+    }
+  }
+  if (buf.length > 0) await channel.send(buf);
+}
+
 async function logNewMessage(message) {
   const ch = await getLogChannel();
   if (!ch) return;
@@ -360,9 +375,7 @@ client.on("messageCreate", async (message) => {
       lines.push(fmtViewLine(globalNum, m.createdTimestamp, rawTxt));
     }
 
-    let out = lines.join("\n");
-    if (out.length > 2000) out = out.slice(0, 1997) + "...";
-    await message.channel.send(out);
+    await sendLines(message.channel, lines);
     return;
   }
 });
