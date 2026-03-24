@@ -45,19 +45,39 @@ async function getLogChannel() {
   return client.guilds.cache.get(cfg.log.guildId)?.channels.cache.get(cfg.log.channelId) || null;
 }
 
+function resolveAuthor(message) {
+  if (message.author) {
+    return `${message.author.username}#${message.author.discriminator} (${message.author.id})`;
+  }
+  const cached = message.author?.id ? client.users.cache.get(message.author.id) : null;
+  if (cached) {
+    return `${cached.username}#${cached.discriminator} (${cached.id})`;
+  }
+  return `(not cached)`;
+}
+
+function resolveContent(message) {
+  if (message.content) return message.content;
+  if (message.attachments?.size > 0) return null;
+  if (message.embeds?.length > 0) return "(embed only)";
+  if (message.stickers?.size > 0) return "(sticker)";
+  return "(no content)";
+}
+
 async function logNewMessage(message) {
   const ch = await getLogChannel();
   if (!ch || !ch.isText()) return;
 
   const date = fmtDate(message.createdTimestamp);
-  const author = `${message.author.username}#${message.author.discriminator} (${message.author.id})`;
-  const content = message.content || "(no text content)";
+  const author = resolveAuthor(message);
+  const content = resolveContent(message);
 
-  let out = `[${date}] ${author}\n${content}`;
+  let out = `[${date}] ${author}`;
+  if (content) out += `\n${content}`;
   if (message.attachments.size > 0) {
     out += "\natt:\n" + message.attachments.map((a) => a.url).join("\n");
   }
-  if (message.embeds.length > 0) {
+  if (message.embeds.length > 0 && !message.content) {
     out += `\n(${message.embeds.length} embed(s))`;
   }
   if (out.length > 2000) out = out.slice(0, 1997) + "...";
@@ -198,7 +218,7 @@ client.on("messageCreate", async (message) => {
 
     const lines = results.map((m) => {
       const role = m.roles.highest.name === "@everyone" ? "no role" : m.roles.highest.name;
-      return `${m.displayName} (${m.user.username}) - ${role}`;
+      return `${m.displayName} (\`${m.user?.id ?? m.id}\`) - ${role}`;
     });
     await message.channel.send(lines.join("\n").slice(0, 2000));
     return;
@@ -258,7 +278,7 @@ client.on("messageCreate", async (message) => {
     const lines = [`${maxPage}`];
     for (const m of slice) {
       const date = fmtDate(m.createdTimestamp);
-      const txt = (m.content || "(no text)").slice(0, 80);
+      const txt = (m.content || resolveContent(m) || "(no content)").slice(0, 80);
       lines.push(`[${date}] ${txt}`);
     }
     await message.channel.send(lines.join("\n").slice(0, 2000));
@@ -267,7 +287,10 @@ client.on("messageCreate", async (message) => {
 });
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
-  if (oldMessage.content === newMessage.content) return;
+  const oldContent = oldMessage.content ?? "";
+  const newContent = newMessage.content ?? "";
+  if (oldContent === newContent) return;
+
   const cfg = loadConfig();
   if (
     newMessage.guild?.id !== cfg.source.guildId ||
@@ -278,11 +301,11 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   if (!ch || !ch.isText()) return;
 
   const date = fmtDate(newMessage.editedTimestamp || newMessage.createdTimestamp);
-  const author = `${newMessage.author?.username}#${newMessage.author?.discriminator} (${newMessage.author?.id})`;
-  const oldContent = oldMessage.content || "(unavailable)";
-  const newContent = newMessage.content || "(no text content)";
+  const author = resolveAuthor(newMessage);
+  const displayOld = oldContent || "(unavailable)";
+  const displayNew = newContent || "(cleared)";
 
-  const out = `[${date}] ${author} edit\nold ahh: ${oldContent}\nnew: ${newContent}`.slice(0, 2000);
+  const out = `[${date}] ${author} edit\nold ahh: ${displayOld}\nnew: ${displayNew}`.slice(0, 2000);
   try { await ch.send(out); } catch (e) { console.error("[error] edit log failed:", e.message); }
 });
 
@@ -297,12 +320,14 @@ client.on("messageDelete", async (message) => {
   if (!ch || !ch.isText()) return;
 
   const date = fmtDate(message.createdTimestamp || Date.now());
-  const author = message.author
-    ? `${message.author.username}#${message.author.discriminator} (${message.author.id})`
-    : "(unknown)";
-  const content = message.content || "(no text content)";
+  const author = resolveAuthor(message);
+  const content = message.content || (message.attachments?.size > 0 ? "(attachment only)" : "(not cached)");
 
-  const out = `[${date}] ${author} deleted ts\n${content}`.slice(0, 2000);
+  let out = `[${date}] ${author} deleted ts\n${content}`;
+  if (message.attachments?.size > 0) {
+    out += "\natt:\n" + message.attachments.map((a) => a.url).join("\n");
+  }
+  out = out.slice(0, 2000);
   try { await ch.send(out); } catch (e) { console.error("[error] delete log failed:", e.message); }
 });
 
