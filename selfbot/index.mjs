@@ -80,6 +80,8 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
     return;
   }
 
+  if (oldMessage.content === newMessage.content) return;
+
   const logChannel = client.guilds.cache
     .get(logDest.guildId)
     ?.channels.cache.get(logDest.channelId);
