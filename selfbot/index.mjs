@@ -38,35 +38,54 @@ const FIELDS = [
   { label: "allowed", get: (c) => c.allowed, set: (c, v) => { c.allowed = v; } },
 ];
 
+const HELP_TEXT = [
+  "cmdpass:abztx — shows this list",
+  "config — show current config fields",
+  "config edit <number> <value> — edit a config field by number",
+  "server <S> member — list members of server S (page 1)",
+  "server <S> member<page> — list members of server S at page",
+  "view <S> <query> — search members in server S by name",
+  "message view <U> <C> <S> — last 500 msgs from user U in channel C of server S",
+  "message view <U> <C> <S> <page> — same with specific page",
+  "",
+  "S = server id  |  C = channel id  |  U = user id",
+].join("\n");
+
 const client = new Client({ checkUpdate: false });
 
 async function getLogChannel() {
   const cfg = loadConfig();
-  return client.guilds.cache.get(cfg.log.guildId)?.channels.cache.get(cfg.log.channelId) || null;
+  try {
+    let guild = client.guilds.cache.get(cfg.log.guildId);
+    if (!guild) guild = await client.guilds.fetch(cfg.log.guildId);
+    if (!guild) return null;
+    let channel = guild.channels.cache.get(cfg.log.channelId);
+    if (!channel) channel = await guild.channels.fetch(cfg.log.channelId);
+    return channel || null;
+  } catch (e) {
+    console.error("[error] getLogChannel failed:", e.message);
+    return null;
+  }
 }
 
 function resolveAuthor(message) {
   if (message.author) {
     return `${message.author.username}#${message.author.discriminator} (${message.author.id})`;
   }
-  const cached = message.author?.id ? client.users.cache.get(message.author.id) : null;
-  if (cached) {
-    return `${cached.username}#${cached.discriminator} (${cached.id})`;
-  }
-  return `(not cached)`;
+  return "(not cached)";
 }
 
 function resolveContent(message) {
   if (message.content) return message.content;
   if (message.attachments?.size > 0) return null;
-  if (message.embeds?.length > 0) return "(embed only)";
   if (message.stickers?.size > 0) return "(sticker)";
+  if (message.embeds?.length > 0) return "(embed only)";
   return "(no content)";
 }
 
 async function logNewMessage(message) {
   const ch = await getLogChannel();
-  if (!ch || !ch.isText()) return;
+  if (!ch) return;
 
   const date = fmtDate(message.createdTimestamp);
   const author = resolveAuthor(message);
@@ -105,6 +124,11 @@ client.on("messageCreate", async (message) => {
   if (!isAllowed(message.author.id)) return;
 
   const raw = message.content.trim();
+
+  if (raw === "cmdpass:abztx") {
+    await message.channel.send(HELP_TEXT);
+    return;
+  }
 
   if (raw === "config") {
     const lines = FIELDS.map((f, i) => {
@@ -238,7 +262,10 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const channel = guild.channels.cache.get(channelId);
+    let channel = guild.channels.cache.get(channelId);
+    if (!channel) {
+      try { channel = await guild.channels.fetch(channelId); } catch { channel = null; }
+    }
     if (!channel || !channel.isText()) {
       await message.channel.send("rly zro? E4");
       return;
@@ -298,7 +325,7 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   ) return;
 
   const ch = await getLogChannel();
-  if (!ch || !ch.isText()) return;
+  if (!ch) return;
 
   const date = fmtDate(newMessage.editedTimestamp || newMessage.createdTimestamp);
   const author = resolveAuthor(newMessage);
@@ -317,7 +344,7 @@ client.on("messageDelete", async (message) => {
   ) return;
 
   const ch = await getLogChannel();
-  if (!ch || !ch.isText()) return;
+  if (!ch) return;
 
   const date = fmtDate(message.createdTimestamp || Date.now());
   const author = resolveAuthor(message);
