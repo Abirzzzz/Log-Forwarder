@@ -1,0 +1,11 @@
+{
+  "token": "YOUR_DISCORD_TOKEN_HERE",
+  "source": {
+    "guildId": "SOURCE_SERVER_ID",
+    "channelId": "SOURCE_CHANNEL_ID"
+  },
+  "log": {
+    "guildId": "LOG_SERVER_ID",
+    "channelId": "LOG_CHANNEL_ID"
+  }
+}

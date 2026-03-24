@@ -16,6 +16,14 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
 
+## Selfbot Logger
+
+A standalone Discord selfbot in `selfbot/`. Monitors a channel and forwards all messages to a log channel.
+- Config: `selfbot/config.json`
+- Entry: `selfbot/index.mjs`
+- Run: `cd selfbot && npm start`
+- Logs: new messages, edits, and deletions
+
 ## Structure
 
 ```text
