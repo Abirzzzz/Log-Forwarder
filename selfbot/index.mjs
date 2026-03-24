@@ -132,7 +132,7 @@ client.on("messageCreate", async (message) => {
     try {
       const fetched = await guild.members.fetch();
       members = [...fetched.values()].sort((a, b) =>
-        a.user.username.localeCompare(b.user.username)
+        a.displayName.localeCompare(b.displayName)
       );
     } catch {
       await message.channel.send("rly zro? E3");
@@ -151,8 +151,55 @@ client.on("messageCreate", async (message) => {
     const lines = [`${maxPage}`];
     for (const m of slice) {
       const role = m.roles.highest.name === "@everyone" ? "no role" : m.roles.highest.name;
-      lines.push(`${m.user.username}#${m.user.discriminator} - ${role}`);
+      lines.push(`**${m.displayName}** - ${role}`);
     }
+    await message.channel.send(lines.join("\n").slice(0, 2000));
+    return;
+  }
+
+  const viewMatch = raw.match(/^view (\S+) (.+)$/);
+  if (viewMatch) {
+    const guildId = viewMatch[1];
+    const query = viewMatch[2].trim();
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      await message.channel.send("rly zro? E2");
+      return;
+    }
+
+    let members;
+    try {
+      const fetched = await guild.members.fetch();
+      members = [...fetched.values()];
+    } catch {
+      await message.channel.send("rly zro? E3");
+      return;
+    }
+
+    const q = query.toLowerCase();
+    const results = members
+      .filter((m) => m.displayName.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aName = a.displayName.toLowerCase();
+        const bName = b.displayName.toLowerCase();
+        if (aName === q && bName !== q) return -1;
+        if (bName === q && aName !== q) return 1;
+        if (aName.startsWith(q) && !bName.startsWith(q)) return -1;
+        if (bName.startsWith(q) && !aName.startsWith(q)) return 1;
+        return aName.localeCompare(bName);
+      })
+      .slice(0, 10);
+
+    if (results.length === 0) {
+      await message.channel.send("no results found");
+      return;
+    }
+
+    const lines = results.map((m) => {
+      const role = m.roles.highest.name === "@everyone" ? "no role" : m.roles.highest.name;
+      return `${m.displayName} (${m.user.username}) - ${role}`;
+    });
     await message.channel.send(lines.join("\n").slice(0, 2000));
     return;
   }
