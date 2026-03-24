@@ -99,12 +99,14 @@ function resolveContent(message) {
   return "(no content)";
 }
 
-// Format a message view line: bold content, date prefix M/D only if it fits under 90 chars
-function fmtViewLine(ts, rawContent) {
+// Format a message view line: #num, bold content, date prefix M/D only if full line fits under 95 chars
+function fmtViewLine(num, ts, rawContent) {
   const date = fmtShortDate(ts);
+  const numStr = `#${num} `;
   const bold = `**${rawContent}**`;
-  const withDate = `[${date}] ${bold}`;
-  return withDate.length <= 90 ? withDate : bold;
+  const withDate = `${numStr}[${date}] ${bold}`;
+  const withoutDate = `${numStr}${bold}`;
+  return withDate.length <= 95 ? withDate : withoutDate;
 }
 
 async function logNewMessage(message) {
@@ -127,11 +129,27 @@ async function logNewMessage(message) {
   try { await ch.send(out); } catch (e) { console.error("[error] log send failed:", e.message); }
 }
 
-client.on("ready", () => {
+client.on("ready", async () => {
   const cfg = loadConfig();
   console.log(`[INFO] logged in as ${client.user.tag}`);
   console.log(`[INFO] source: ${cfg.source.guildId} / ${cfg.source.channelId}`);
   console.log(`[INFO] log: ${cfg.log.guildId} / ${cfg.log.channelId}`);
+
+  // Pre-fetch recent source channel messages into cache so edit logs
+  // can show original content even for messages sent before bot started
+  try {
+    let srcGuild = client.guilds.cache.get(cfg.source.guildId);
+    if (!srcGuild) srcGuild = await client.guilds.fetch(cfg.source.guildId);
+    let srcChannel = srcGuild?.channels.cache.get(cfg.source.channelId);
+    if (!srcChannel) srcChannel = await srcGuild?.channels.fetch(cfg.source.channelId);
+    if (srcChannel) {
+      const recent = await srcChannel.messages.fetch({ limit: 100 });
+      recent.forEach((m) => cacheSet(m.id, m.content));
+      console.log(`[INFO] pre-cached ${recent.size} source messages`);
+    }
+  } catch (e) {
+    console.error("[warn] failed to pre-cache source messages:", e.message);
+  }
 });
 
 client.on("messageCreate", async (message) => {
@@ -334,9 +352,12 @@ client.on("messageCreate", async (message) => {
 
     const slice = userMessages.slice((page - 1) * perPage, page * perPage);
     const lines = [`${maxPage}`];
-    for (const m of slice) {
+    const offset = (page - 1) * perPage;
+    for (let i = 0; i < slice.length; i++) {
+      const m = slice[i];
+      const globalNum = offset + i + 1;
       const rawTxt = (m.content || resolveContent(m) || "(no content)");
-      lines.push(fmtViewLine(m.createdTimestamp, rawTxt));
+      lines.push(fmtViewLine(globalNum, m.createdTimestamp, rawTxt));
     }
 
     let out = lines.join("\n");
