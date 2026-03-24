@@ -42,7 +42,7 @@ client.on("messageCreate", async (message) => {
     ?.channels.cache.get(logDest.channelId);
 
   if (!logChannel || !logChannel.isText()) {
-    console.error("[ERROR] Log channel not found or not a text channel.");
+    console.error("[errror] log channel not found or not a text channelf");
     return;
   }
 
@@ -50,11 +50,11 @@ client.on("messageCreate", async (message) => {
   const author = `${message.author.username}#${message.author.discriminator} (${message.author.id})`;
   const content = message.content || "(no text content)";
 
-  let logMessage = `\`[${timestamp}]\` **${author}**\n${content}`;
+  let logMessage = `\`[${timestamp}]\` ${author}\n${content}`;
 
   if (message.attachments.size > 0) {
     const attachmentLinks = message.attachments.map((a) => a.url).join("\n");
-    logMessage += `\nAttachments:\n${attachmentLinks}`;
+    logMessage += `\natt:\n${attachmentLinks}`;
   }
 
   if (message.embeds.length > 0) {
@@ -68,7 +68,7 @@ client.on("messageCreate", async (message) => {
   try {
     await logChannel.send(logMessage);
   } catch (err) {
-    console.error("[ERROR] Failed to send log message:", err.message);
+    console.error("[error] failed to send log messageniga", err.message);
   }
 });
 
@@ -91,12 +91,12 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   const oldContent = oldMessage.content || "(unavailable)";
   const newContent = newMessage.content || "(no text content)";
 
-  const logMessage = `\`[${timestamp}]\` ✏️ **${author}** edited a message\n**Before:** ${oldContent}\n**After:** ${newContent}`.slice(0, 2000);
+  const logMessage = `\`[${timestamp}]\` ${author} edit\nold ahh: ${oldContent}\nnew: ${newContent}`.slice(0, 2000);
 
   try {
     await logChannel.send(logMessage);
   } catch (err) {
-    console.error("[ERROR] Failed to send edit log:", err.message);
+    console.error("[error idk how] failed to send edit logg", err.message);
   }
 });
 
@@ -120,12 +120,12 @@ client.on("messageDelete", async (message) => {
     : "(unknown user)";
   const content = message.content || "(no text content)";
 
-  const logMessage = `\`[${timestamp}]\` 🗑️ **${author}** deleted a message\n${content}`.slice(0, 2000);
+  const logMessage = `\`[${timestamp}]\` ${author} deleted ts \n${content}`.slice(0, 2000);
 
   try {
     await logChannel.send(logMessage);
   } catch (err) {
-    console.error("[ERROR] Failed to send delete log:", err.message);
+    console.error("[error] faiiled to send delete log nga", err.message);
   }
 });
 
