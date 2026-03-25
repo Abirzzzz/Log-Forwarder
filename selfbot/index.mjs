@@ -3,7 +3,6 @@ import { readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { createServer } from "http";
-import pg from "pg";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = join(__dirname, "config.json");
@@ -51,8 +50,6 @@ const HELP_TEXT = [
   "message view <U> <C> <S> <page>  same shi",
   "clear <number>  deletes that many msgs",
   "clear all  deletes everything possible",
-  "getback  logs missed/edited/deleted msgs while bot was offline",
-  "dbfuck  wipes entire message database",
   "",
   "S = server id  C = channel id  U = user id",
   "",
@@ -64,60 +61,6 @@ const HELP_TEXT = [
 ].join("\n");
 
 const client = new Client({ checkUpdate: false });
-
-// --- PostgreSQL ---
-const { Pool } = pg;
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-async function dbInit() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS source_messages (
-      message_id   TEXT PRIMARY KEY,
-      author_id    TEXT NOT NULL,
-      author_name  TEXT NOT NULL,
-      content      TEXT,
-      attachments  TEXT,
-      created_at   BIGINT NOT NULL,
-      edited_at    BIGINT,
-      deleted_at   BIGINT,
-      status       TEXT NOT NULL DEFAULT 'active'
-    )
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sm_created ON source_messages(created_at)`);
-  console.log("[db] ready");
-}
-
-async function dbInsert(message) {
-  try {
-    const atts = message.attachments?.size > 0
-      ? JSON.stringify([...message.attachments.values()].map(a => a.url))
-      : null;
-    await pool.query(
-      `INSERT INTO source_messages (message_id, author_id, author_name, content, attachments, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (message_id) DO NOTHING`,
-      [message.id, message.author?.id ?? "unknown", message.author?.username ?? "unknown",
-       message.content || null, atts, message.createdTimestamp]
-    );
-  } catch (e) { console.error("[db] insert error:", e.message); }
-}
-
-async function dbUpdateEdit(messageId, newContent, editedAt) {
-  try {
-    await pool.query(
-      `UPDATE source_messages SET content=$1, edited_at=$2, status='edited' WHERE message_id=$3`,
-      [newContent, editedAt, messageId]
-    );
-  } catch (e) { console.error("[db] edit error:", e.message); }
-}
-
-async function dbMarkDeleted(messageId, deletedAt) {
-  try {
-    await pool.query(
-      `UPDATE source_messages SET deleted_at=$1, status='deleted' WHERE message_id=$2`,
-      [deletedAt, messageId]
-    );
-  } catch (e) { console.error("[db] delete error:", e.message); }
-}
 
 // --- Content cache for edit/delete log recovery ---
 const contentCache = new Map();
@@ -232,9 +175,7 @@ function isCommand(raw) {
     /^view \S+ .+$/.test(raw) ||
     /^message view \S+ \S+ \S+/.test(raw) ||
     raw === "clear all" ||
-    /^clear \d+$/.test(raw) ||
-    raw === "getback" ||
-    raw === "dbfuck"
+    /^clear \d+$/.test(raw)
   );
 }
 
@@ -460,95 +401,6 @@ async function executeCommand(message, raw, callerIsOwner) {
     return;
   }
 
-  // dbfuck — wipe entire DB
-  if (raw === "dbfuck") {
-    if (!callerIsOwner) { await message.channel.send("owner only zro"); return; }
-    await pool.query("DELETE FROM source_messages");
-    await message.channel.send("db wiped 🫩");
-    return;
-  }
-
-  // getback — fetch missed/edited/deleted msgs while bot was offline
-  if (raw === "getback") {
-    if (!callerIsOwner) { await message.channel.send("owner only zro"); return; }
-    const cfg = loadConfig();
-    const srcChannel = await fetchChannel(cfg.source?.guildId, cfg.source?.channelId);
-    const logCh = await getLogChannel();
-    if (!srcChannel || !logCh) { await message.channel.send("rly zro? channel not found"); return; }
-
-    await message.channel.send("fetching msgs...");
-
-    // Step 1: paginate up to 1000 messages from Discord
-    const discordMsgs = new Map(); // message_id -> message
-    let lastId = null;
-    for (let i = 0; i < 10; i++) {
-      const opts = { limit: 100 };
-      if (lastId) opts.before = lastId;
-      let batch;
-      try { batch = await srcChannel.messages.fetch(opts); } catch { break; }
-      if (batch.size === 0) break;
-      batch.forEach(m => discordMsgs.set(m.id, m));
-      lastId = batch.last().id;
-      if (batch.size < 100) break;
-    }
-
-    if (discordMsgs.size === 0) { await message.channel.send("no messages found in source channel"); return; }
-
-    const oldestTs = Math.min(...[...discordMsgs.values()].map(m => m.createdTimestamp));
-
-    // Step 2: query DB for IDs in the same time range
-    const { rows: dbRows } = await pool.query(
-      `SELECT message_id, content, status FROM source_messages WHERE created_at >= $1`,
-      [oldestTs]
-    );
-    const dbMap = new Map(dbRows.map(r => [r.message_id, r]));
-
-    let missed = 0, edited = 0, deleted = 0;
-
-    // Step 3: find missed + offline edits
-    for (const [id, m] of discordMsgs) {
-      if (m.author?.id === client.user.id) continue; // skip own messages
-      const dbRecord = dbMap.get(id);
-      if (!dbRecord) {
-        // Missed entirely — insert + log
-        await dbInsert(m);
-        const date = fmtDate(m.createdTimestamp);
-        const author = resolveAuthor(m);
-        const content = resolveContent(m);
-        let out = `[missed][${date}] ${author}`;
-        if (content) out += `\n${content}`;
-        if (m.attachments?.size > 0) out += "\natt:\n" + m.attachments.map(a => a.url).join("\n");
-        try { await logCh.send(out.slice(0, 2000)); } catch {}
-        missed++;
-      } else if (dbRecord.status !== "deleted") {
-        const discordContent = m.content || null;
-        const dbContent = dbRecord.content || null;
-        if (discordContent !== dbContent) {
-          // Offline edit detected
-          await dbUpdateEdit(id, m.content, m.editedTimestamp || Date.now());
-          const date = fmtDate(m.createdTimestamp);
-          const author = resolveAuthor(m);
-          const out = `[offline-edit][${date}] ${author}\nold: ${dbContent || "(none)"}\nnew: ${discordContent || "(none)"}`;
-          try { await logCh.send(out.slice(0, 2000)); } catch {}
-          edited++;
-        }
-      }
-    }
-
-    // Step 4: find offline deletes — DB records in range not present in Discord
-    for (const [id, dbRecord] of dbMap) {
-      if (dbRecord.status === "deleted") continue;
-      if (!discordMsgs.has(id)) {
-        await dbMarkDeleted(id, Date.now());
-        const out = `[offline-deleted] message ${id} was deleted while bot was offline`;
-        try { await logCh.send(out.slice(0, 2000)); } catch {}
-        deleted++;
-      }
-    }
-
-    await message.channel.send(`getback done: ${missed} missed, ${edited} offline edits, ${deleted} offline deletes`);
-    return;
-  }
 }
 
 // --- Ready ---
@@ -558,8 +410,6 @@ client.on("ready", async () => {
   console.log(`[INFO] source: ${cfg.source?.guildId} / ${cfg.source?.channelId}`);
   console.log(`[INFO] log: ${cfg.log?.guildId} / ${cfg.log?.channelId}`);
   console.log(`[INFO] perm: ${cfg.perm?.guildId} / ${cfg.perm?.channelId}`);
-
-  await dbInit().catch(e => console.error("[db] init error:", e.message));
 
   try {
     const srcChannel = await fetchChannel(cfg.source?.guildId, cfg.source?.channelId);
@@ -588,7 +438,6 @@ client.on("messageCreate", async (message) => {
   if (isSource) {
     cacheSet(message.id, message.content);
     if (authorId !== client.user.id) {
-      await dbInsert(message);
       await logNewMessage(message);
     }
   }
