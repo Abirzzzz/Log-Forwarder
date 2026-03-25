@@ -363,32 +363,36 @@ async function executeCommand(message, raw, callerIsOwner) {
     let permError = false;
     let deleted = 0;
 
+    const isPermErr = (e) => e?.code === 50013 || e?.status === 403 || e?.httpStatus === 403;
+
     // Delete the command message itself first
-    try { await message.delete(); deleted++; } catch { permError = true; }
+    try { await message.delete(); deleted++; } catch (e) {
+      if (isPermErr(e)) permError = true;
+      // non-permission failures (already deleted, unknown message, etc.) → just continue
+    }
 
-    if (!permError || limit === Infinity) {
-      let lastId = null;
-      outer: while (deleted < limit) {
-        const batchSize = Math.min(100, limit === Infinity ? 100 : limit - deleted);
-        const opts = { limit: batchSize };
-        if (lastId) opts.before = lastId;
+    let lastId = null;
+    outer: while (deleted < limit) {
+      const batchSize = Math.min(100, limit === Infinity ? 100 : limit - deleted);
+      const opts = { limit: batchSize };
+      if (lastId) opts.before = lastId;
 
-        let batch;
-        try { batch = await message.channel.messages.fetch(opts); } catch { break; }
-        if (batch.size === 0) break;
+      let batch;
+      try { batch = await message.channel.messages.fetch(opts); } catch { break; }
+      if (batch.size === 0) break;
 
-        for (const [, msg] of batch) {
-          try {
-            await msg.delete();
-            deleted++;
-          } catch (e) {
-            if (e.code === 50013 || e.status === 403) { permError = true; break outer; }
-          }
-          if (deleted >= limit) break outer;
+      for (const [, msg] of batch) {
+        try {
+          await msg.delete();
+          deleted++;
+        } catch (e) {
+          if (isPermErr(e)) { permError = true; break outer; }
+          // unknown message or other transient error → skip and keep going
         }
-        lastId = batch.last().id;
-        if (batch.size < batchSize) break;
+        if (deleted >= limit) break outer;
       }
+      lastId = batch.last().id;
+      if (batch.size < batchSize) break;
     }
 
     if (permError) {
