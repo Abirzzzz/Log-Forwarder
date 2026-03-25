@@ -1,0 +1,11 @@
+node_modules
+artifacts
+lib
+scripts
+.local
+.cache
+.git
+*.md
+pnpm-lock.yaml
+pnpm-workspace.yaml
+tsconfig*.json
