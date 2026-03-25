@@ -1,5 +1,5 @@
 {
-  "token": "",
+  "token": "YOUR_DISCORD_TOKEN_HERE",
   "source": {
     "guildId": "1471709412837298380",
     "channelId": "1471977578075259063"

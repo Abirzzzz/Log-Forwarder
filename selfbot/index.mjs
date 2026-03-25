@@ -762,9 +762,9 @@ const internalServer = createServer(async (req, res) => {
 internalServer.listen(3001, () => console.log("[INFO] internal API on :3001"));
 
 // --- Boot ---
-const token = process.env.DISCORD_TOKEN || loadConfig().token;
+const token = loadConfig().token;
 if (!token || token === "YOUR_DISCORD_TOKEN_HERE") {
-  console.error("[ERROR] set DISCORD_TOKEN env var or token in config.json");
+  console.error("[ERROR] set token in config.json");
   process.exit(1);
 }
 
