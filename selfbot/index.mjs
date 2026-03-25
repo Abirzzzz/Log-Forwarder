@@ -2,6 +2,7 @@ import { Client } from "discord.js-selfbot-v13";
 import { readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { createServer } from "http";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = join(__dirname, "config.json");
@@ -574,6 +575,63 @@ client.on("messageDelete", async (message) => {
   out = out.slice(0, 2000);
   try { await ch.send(out); } catch (e) { console.error("[error] delete log failed:", e.message); }
 });
+
+// --- Status tracking ---
+const statusErrors = [];
+let botStatus = "starting";
+let botTag = null;
+
+// --- Error handler (prevents unhandled errors from crashing the process) ---
+client.on("error", (err) => {
+  const msg = `[${new Date().toISOString()}] ${err.message}`;
+  console.error("[client error]", msg);
+  statusErrors.push(msg);
+  if (statusErrors.length > 50) statusErrors.shift();
+});
+
+process.on("unhandledRejection", (err) => {
+  const msg = `[${new Date().toISOString()}] ${err?.message ?? err}`;
+  console.error("[unhandled rejection]", msg);
+  statusErrors.push(msg);
+  if (statusErrors.length > 50) statusErrors.shift();
+});
+
+client.on("ready", () => { botStatus = "online"; botTag = client.user.tag; });
+
+// --- Status HTTP server (required by Railway for health checks) ---
+const PORT = process.env.PORT || 3001;
+const statusServer = createServer((req, res) => {
+  const uptime = process.uptime();
+  const h = Math.floor(uptime / 3600);
+  const m = Math.floor((uptime % 3600) / 60);
+  const s = Math.floor(uptime % 60);
+  const uptimeStr = `${h}h ${m}m ${s}s`;
+
+  const errHtml = statusErrors.length === 0
+    ? `<p style="color:#57f287">No errors</p>`
+    : statusErrors.map(e => `<p style="color:#ed4245;font-family:monospace;font-size:13px">${e}</p>`).join("");
+
+  const html = `<!DOCTYPE html><html>
+<head><title>Selfbot Status</title>
+<style>body{background:#23272a;color:#dcddde;font-family:sans-serif;padding:40px;max-width:800px;margin:0 auto}
+h1{color:#fff}span.online{color:#57f287}span.starting{color:#fee75c}span.offline{color:#ed4245}</style></head>
+<body>
+<h1>Selfbot Status</h1>
+<p>Status: <span class="${botStatus}">${botStatus.toUpperCase()}</span></p>
+${botTag ? `<p>Logged in as: <b>${botTag}</b></p>` : ""}
+<p>Uptime: ${uptimeStr}</p>
+<h2>Recent Errors</h2>
+${errHtml}
+</body></html>`;
+
+  res.writeHead(200, { "Content-Type": "text/html" });
+  res.end(html);
+});
+
+statusServer.on("error", (err) => {
+  console.warn(`[WARN] status server could not start on :${PORT} — ${err.message}`);
+});
+statusServer.listen(PORT, () => console.log(`[INFO] status page on :${PORT}`));
 
 // --- Boot ---
 const token = loadConfig().token;
