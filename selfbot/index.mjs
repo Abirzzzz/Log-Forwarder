@@ -2,7 +2,6 @@ import { Client } from "discord.js-selfbot-v13";
 import { readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { createServer } from "http";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = join(__dirname, "config.json");
@@ -425,7 +424,6 @@ client.on("ready", async () => {
 
 // --- Main message handler ---
 client.on("messageCreate", async (message) => {
-  if (!message.content) return;
   const cfg = loadConfig();
   const authorId = message.author?.id;
   if (!authorId) return;
@@ -442,6 +440,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
+  if (!message.content) return;
   const raw = message.content.trim();
 
   // Owner responding in perm channel
@@ -575,40 +574,6 @@ client.on("messageDelete", async (message) => {
   out = out.slice(0, 2000);
   try { await ch.send(out); } catch (e) { console.error("[error] delete log failed:", e.message); }
 });
-
-// --- Internal HTTP API (used by web UI) ---
-const internalServer = createServer(async (req, res) => {
-  const send = (status, data) => {
-    res.writeHead(status, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(data));
-  };
-  if (req.method === "POST" && req.url === "/send") {
-    let body = "";
-    req.on("data", chunk => { body += chunk; });
-    req.on("end", async () => {
-      try {
-        const { channelId, guildId, message } = JSON.parse(body);
-        if (!channelId || !message) return send(400, { ok: false, error: "channelId and message are required" });
-        let channel;
-        if (guildId) {
-          const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
-          if (!guild) return send(404, { ok: false, error: "Server not found" });
-          channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
-        } else {
-          channel = client.channels.cache.get(channelId) || await client.channels.fetch(channelId).catch(() => null);
-        }
-        if (!channel) return send(404, { ok: false, error: "Channel not found" });
-        await channel.send(message);
-        send(200, { ok: true });
-      } catch (e) {
-        send(500, { ok: false, error: e.message });
-      }
-    });
-  } else {
-    res.writeHead(404); res.end();
-  }
-});
-internalServer.listen(3001, () => console.log("[INFO] internal API on :3001"));
 
 // --- Boot ---
 const token = loadConfig().token;
