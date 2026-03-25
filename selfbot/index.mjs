@@ -571,10 +571,10 @@ client.on("messageDelete", async (message) => {
 });
 
 // --- Boot ---
-const cfg = loadConfig();
-if (!cfg.token || cfg.token === "YOUR_DISCORD_TOKEN_HERE") {
-  console.error("[ERROR] set your token in config.json");
+const token = process.env.DISCORD_TOKEN || loadConfig().token;
+if (!token || token === "YOUR_DISCORD_TOKEN_HERE") {
+  console.error("[ERROR] set DISCORD_TOKEN env var or token in config.json");
   process.exit(1);
 }
 
-client.login(cfg.token);
+client.login(token);
