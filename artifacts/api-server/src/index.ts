@@ -1,3 +1,5 @@
+import { spawn, type ChildProcess } from "child_process";
+import { join } from "path";
 import app from "./app";
 import { logger } from "./lib/logger";
 
@@ -23,3 +25,33 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 });
+
+// In production, the selfbot has no separate workflow — spawn and supervise it here.
+// In development it runs as its own workflow, so we skip this to avoid duplicates.
+if (process.env.NODE_ENV === "production") {
+  const selfbotDir = join(process.cwd(), "selfbot");
+
+  function startSelfbot(): ChildProcess {
+    logger.info("[selfbot] starting...");
+
+    const child = spawn("node", ["index.mjs"], {
+      cwd: selfbotDir,
+      env: process.env,
+      stdio: "inherit",
+    });
+
+    child.on("exit", (code, signal) => {
+      logger.warn({ code, signal }, "[selfbot] exited — restarting in 5s");
+      setTimeout(startSelfbot, 5_000);
+    });
+
+    child.on("error", (err) => {
+      logger.error({ err }, "[selfbot] spawn error — restarting in 5s");
+      setTimeout(startSelfbot, 5_000);
+    });
+
+    return child;
+  }
+
+  startSelfbot();
+}
